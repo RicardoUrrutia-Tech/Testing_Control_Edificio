@@ -4,10 +4,12 @@ from io import BytesIO
 
 from PIL import Image
 
-# PDF (ReportLab)
+# PDF (ReportLab - visual)
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
-from reportlab.pdfgen import canvas
 
 # Word (python-docx)
 from docx import Document
@@ -122,108 +124,222 @@ def build_report_text():
 
 
 # ---------------------------
-# Helpers (PDF/DOCX)
+# PDF (Visual 3-column table + red soft background on FAIL + summary cards)
 # ---------------------------
-def _wrap_pdf_line(text: str, max_chars: int):
-    import textwrap
-    return textwrap.wrap(text, width=max_chars) or [""]
+def _status_tag_html(status: str) -> str:
+    if status == "ok":
+        return '<font color="#16a34a"><b>OK</b></font>'
+    if status == "fail":
+        return '<font color="#dc2626"><b>FALLA</b></font>'
+    return '<font color="#64748b"><b>PEND.</b></font>'
 
 
-def generate_pdf_bytes(report_text: str) -> bytes:
-    """
-    PDF con texto + fotos anexas.
-    """
+def _make_rl_image(photo_bytes: bytes, max_w: float, max_h: float, small_style):
+    if not photo_bytes:
+        return Paragraph("<i>Sin foto</i>", small_style)
+
+    try:
+        img = Image.open(BytesIO(photo_bytes)).convert("RGB")
+    except Exception:
+        return Paragraph("<i>Foto inválida</i>", small_style)
+
+    iw, ih = img.size
+    scale = min(max_w / iw, max_h / ih)
+    w, h = iw * scale, ih * scale
+
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    buf.seek(0)
+
+    # Import local para evitar warnings en algunos entornos
+    from reportlab.platypus import Image as RLImage
+    return RLImage(buf, width=w, height=h)
+
+
+def generate_pdf_bytes_visual() -> bytes:
+    styles = getSampleStyleSheet()
+
+    normal = ParagraphStyle(
+        "normal",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=9,
+        leading=11,
+        textColor=colors.HexColor("#0f172a"),
+    )
+    small = ParagraphStyle(
+        "small",
+        parent=normal,
+        fontSize=8,
+        leading=10,
+        textColor=colors.HexColor("#334155"),
+    )
+    title_style = ParagraphStyle(
+        "title_style",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=16,
+        leading=18,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=8,
+    )
+    cat_style = ParagraphStyle(
+        "cat_style",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=12,
+        textColor=colors.HexColor("#4338ca"),
+        spaceBefore=10,
+        spaceAfter=6,
+    )
+
     buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=1.2 * cm,
+        rightMargin=1.2 * cm,
+        topMargin=1.2 * cm,
+        bottomMargin=1.2 * cm,
+    )
 
-    x = 2 * cm
-    y = height - 2 * cm
-    line_h = 12
+    elements = []
+    rd = st.session_state["report_date"]
+    ok, fail, pending, total = get_stats()
 
-    def new_page():
-        nonlocal y
-        c.showPage()
-        y = height - 2 * cm
+    # Title
+    elements.append(Paragraph("Control Edificio Pro – Informe Visual", title_style))
+    elements.append(Paragraph(f"<b>Fecha:</b> {rd.isoformat()}", normal))
+    elements.append(Spacer(1, 8))
 
-    # Título
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(x, y, "INFORME DE GESTIÓN / CONTROL DE INSTALACIONES")
-    y -= 18
-    c.setFont("Helvetica", 10)
+    # Summary "cards" (as a 2-column small table)
+    summary_data = [
+        [
+            Paragraph("<b>Sistemas OK</b>", small),
+            Paragraph("<b>Fallas</b>", small),
+            Paragraph("<b>Pendientes</b>", small),
+            Paragraph("<b>Total</b>", small),
+        ],
+        [
+            Paragraph(f"<font color='#16a34a'><b>{ok}</b></font>", normal),
+            Paragraph(f"<font color='#dc2626'><b>{fail}</b></font>", normal),
+            Paragraph(f"<font color='#64748b'><b>{pending}</b></font>", normal),
+            Paragraph(f"<b>{total}</b>", normal),
+        ],
+    ]
+    summary_table = Table(summary_data, colWidths=[4.2 * cm, 4.2 * cm, 4.2 * cm, 4.2 * cm])
+    summary_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
+        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#ffffff")),
+        ("GRID", (0, 0), (-1, -1), 0.6, colors.HexColor("#e2e8f0")),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(summary_table)
+    elements.append(Spacer(1, 12))
 
-    # Texto
-    for raw_line in report_text.split("\n"):
-        if raw_line.strip() == "":
-            if y < 2 * cm:
-                new_page()
-            y -= line_h
+    # Table layout
+    col1_w = 6.2 * cm   # Instalación
+    col2_w = 6.2 * cm   # Estado+Obs
+    col3_w = 5.6 * cm   # Foto
+    photo_max_w = col3_w - 0.3 * cm
+    photo_max_h = 3.6 * cm
+
+    categories = ["Críticos", "Accesos", "Higiene", "Comunes", "Infra"]
+    items = st.session_state["checklist_items"]
+
+    for cat in categories:
+        cat_items = [x for x in items if x["cat"] == cat]
+        if not cat_items:
             continue
 
-        for ln in _wrap_pdf_line(raw_line, 110):
-            if y < 2 * cm:
-                new_page()
-            c.drawString(x, y, ln)
-            y -= line_h
+        elements.append(Paragraph(cat, cat_style))
 
-    # Fotos
-    items = st.session_state["checklist_items"]
-    photos = [it for it in items if it.get("photo")]
+        # Header row
+        data = [
+            [
+                Paragraph("<b>Instalación</b>", normal),
+                Paragraph("<b>Estado / Observación</b>", normal),
+                Paragraph("<b>Registro visual</b>", normal),
+            ]
+        ]
 
-    if photos:
-        if y < 5 * cm:
-            new_page()
+        fail_row_indices = []  # for styling fail rows background
 
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(x, y, "ANEXO: FOTOS")
-        y -= 18
-        c.setFont("Helvetica", 10)
-
-        for it in photos:
-            header = f"#{it['id']} - {it['cat']} - {it['name']} ({it['task']})"
+        for it in cat_items:
+            inst = Paragraph(
+                f"<b>{it['name']}</b><br/><font color='#64748b'>{it['task']}</font>",
+                normal,
+            )
             note = (it.get("note") or "").strip()
-            note_txt = f"Obs: {note}" if note else "Obs: (sin observaciones)"
+            note_txt = note if note else "Sin novedades."
 
-            for ln in _wrap_pdf_line(header, 110):
-                if y < 2 * cm:
-                    new_page()
-                c.drawString(x, y, ln)
-                y -= line_h
+            mid = Paragraph(
+                f"{_status_tag_html(it['status'])}<br/>{note_txt}",
+                normal,
+            )
 
-            for ln in _wrap_pdf_line(note_txt, 110):
-                if y < 2 * cm:
-                    new_page()
-                c.drawString(x, y, ln)
-                y -= line_h
+            img_cell = _make_rl_image(it.get("photo"), photo_max_w, photo_max_h, small)
 
-            img_bytes = it["photo"]
-            img = Image.open(BytesIO(img_bytes)).convert("RGB")
+            row = [inst, mid, img_cell]
+            data.append(row)
 
-            max_w = 16 * cm
-            max_h = 9 * cm
-            iw, ih = img.size
-            scale = min(max_w / iw, max_h / ih)
-            dw, dh = iw * scale, ih * scale
+            # Row index in table (0 is header)
+            if it["status"] == "fail":
+                fail_row_indices.append(len(data) - 1)
 
-            if y - dh < 2 * cm:
-                new_page()
+        table = Table(data, colWidths=[col1_w, col2_w, col3_w])
 
-            img_buf = BytesIO()
-            img.save(img_buf, format="JPEG", quality=85)
-            img_buf.seek(0)
+        style_cmds = [
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("VALIGN", (0, 1), (-1, -1), "TOP"),
+        ]
 
-            c.drawInlineImage(img_buf, x, y - dh, width=dw, height=dh)
-            y -= (dh + 18)
+        # Soft red background for FAIL rows
+        soft_red = colors.HexColor("#fee2e2")  # light red
+        for r in fail_row_indices:
+            style_cmds.append(("BACKGROUND", (0, r), (-1, r), soft_red))
 
-    c.save()
+        table.setStyle(TableStyle(style_cmds))
+
+        elements.append(table)
+        elements.append(Spacer(1, 10))
+
+    # Footer sections (no structural changes besides PDF formatting)
+    elements.append(Spacer(1, 6))
+    elements.append(Paragraph("Requerimientos / Compras", cat_style))
+    needs = (st.session_state["needs"] or "").strip() or "Sin requerimientos reportados."
+    elements.append(Paragraph(needs, normal))
+
+    elements.append(Spacer(1, 6))
+    elements.append(Paragraph("Incidencias RR.HH.", cat_style))
+    incidences = st.session_state["incidences"]
+    if not incidences:
+        elements.append(Paragraph("Sin incidencias registradas.", normal))
+    else:
+        for inc in sorted(incidences, key=lambda x: x["ts"], reverse=True):
+            ts = inc["ts"].strftime("%Y-%m-%d %H:%M")
+            elements.append(Paragraph(f"- <b>{ts}</b> | <b>{inc['employee']}</b>: {inc['detail']}", normal))
+
+    doc.build(elements)
     buffer.seek(0)
     return buffer.getvalue()
 
 
+# ---------------------------
+# Word (same as before: text + photo annex)
+# ---------------------------
 def generate_docx_bytes(report_text: str) -> bytes:
-    """
-    DOCX con texto + fotos anexas.
-    """
     doc = Document()
     doc.add_heading("Informe de Gestión / Control de Instalaciones", level=1)
 
@@ -262,6 +378,7 @@ def generate_docx_bytes(report_text: str) -> bytes:
 init_state()
 ok, fail, pending, total = get_stats()
 
+# Header (same as before)
 st.markdown(
     f"""
     <div style="padding:18px 18px 10px 18px; border-radius:16px; background: linear-gradient(90deg, #4338ca, #4f46e5); color:white;">
@@ -427,7 +544,7 @@ with tab_rrhh:
 # ---------------------------
 with tab_report:
     st.subheader("Generador de Informe (descarga PDF o Word con fotos)")
-    st.caption("Se arma automáticamente con el checklist + requerimientos/compras + incidencias RR.HH. Incluye fotos en un anexo.")
+    st.caption("El PDF se exporta con estructura visual (3 columnas por área). El Word se exporta en texto + anexo de fotos (por ahora).")
 
     st.session_state["needs"] = st.text_area(
         "Requerimientos y compras (texto libre)",
@@ -441,16 +558,16 @@ with tab_report:
     st.markdown("#### Vista previa (texto)")
     st.code(report_text, language="text")
 
-    fmt = st.radio("Formato de descarga", options=["PDF", "Word (DOCX)"], horizontal=True)
+    fmt = st.radio("Formato de descarga", options=["PDF (Visual)", "Word (DOCX)"], horizontal=True)
 
     file_base = f"informe_edificio_{st.session_state['report_date'].isoformat()}"
 
     col1, col2 = st.columns([1, 2])
     with col1:
-        if fmt == "PDF":
-            pdf_bytes = generate_pdf_bytes(report_text)
+        if fmt.startswith("PDF"):
+            pdf_bytes = generate_pdf_bytes_visual()
             st.download_button(
-                "⬇️ Descargar PDF (con fotos)",
+                "⬇️ Descargar PDF (Visual, con fotos)",
                 data=pdf_bytes,
                 file_name=f"{file_base}.pdf",
                 mime="application/pdf",
@@ -465,7 +582,7 @@ with tab_report:
             )
 
     with col2:
-        st.info("Tip: si subes muchas fotos grandes, el archivo puede quedar pesado. Si quieres, puedo agregar redimensionado/compresión automática.")
+        st.info("Tip: si subes muchas fotos grandes, el PDF/DOCX puede quedar pesado. Si quieres, puedo agregar redimensionado/compresión automática.")
 
 st.markdown(
     "<div style='opacity:0.6; font-size:12px; margin-top:18px;'>Plataforma de Control Interno v1.0 (demo) • Streamlit</div>",
