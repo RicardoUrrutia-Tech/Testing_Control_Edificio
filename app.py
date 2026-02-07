@@ -1,6 +1,5 @@
 import streamlit as st
 from datetime import datetime, date
-import textwrap
 
 st.set_page_config(
     page_title="Control Edificio Pro (Streamlit)",
@@ -13,10 +12,11 @@ st.set_page_config(
 # ---------------------------
 def init_state():
     if "report_date" not in st.session_state:
-        st.session_state.report_date = date.today()
+        st.session_state["report_date"] = date.today()
 
-    if "items" not in st.session_state:
-        st.session_state.items = [
+    # IMPORTANTE: NO usar key "items" (colisiona con st.session_state.items())
+    if "checklist_items" not in st.session_state:
+        st.session_state["checklist_items"] = [
             {"id": 1, "cat": "Críticos", "name": "Sala de Bombas", "task": "Presión y alternancia", "status": "pending", "note": "", "photo": None},
             {"id": 2, "cat": "Críticos", "name": "Sala de Calderas", "task": "Temperatura y fugas", "status": "pending", "note": "", "photo": None},
             {"id": 3, "cat": "Críticos", "name": "Generador", "task": "Nivel petróleo y batería", "status": "pending", "note": "", "photo": None},
@@ -35,14 +35,13 @@ def init_state():
         ]
 
     if "incidences" not in st.session_state:
-        st.session_state.incidences = []  # list of dicts: {id, employee, detail, ts}
+        st.session_state["incidences"] = []  # list of dicts: {id, employee, detail, ts}
 
     if "needs" not in st.session_state:
-        st.session_state.needs = ""
+        st.session_state["needs"] = ""
 
 
 def status_badge(status: str) -> str:
-    # returns markdown-like label with emoji
     if status == "ok":
         return "🟢 OK"
     if status == "fail":
@@ -59,7 +58,7 @@ def status_color(status: str) -> str:
 
 
 def get_stats():
-    items = st.session_state.items
+    items = st.session_state["checklist_items"]
     ok = sum(1 for i in items if i["status"] == "ok")
     fail = sum(1 for i in items if i["status"] == "fail")
     pending = sum(1 for i in items if i["status"] == "pending")
@@ -68,7 +67,7 @@ def get_stats():
 
 
 def build_report_text():
-    rd = st.session_state.report_date
+    rd = st.session_state["report_date"]
     ok, fail, pending, total = get_stats()
 
     lines = []
@@ -80,27 +79,26 @@ def build_report_text():
     lines.append("1) CHECKLIST TÉCNICO")
     lines.append("---------------------------------")
 
-    # group by category
     categories = ["Críticos", "Accesos", "Higiene", "Comunes", "Infra"]
     for cat in categories:
         lines.append(f"\n[{cat}]")
-        for it in [x for x in st.session_state.items if x["cat"] == cat]:
-            note = it["note"].strip() if it["note"] else ""
+        for it in [x for x in st.session_state["checklist_items"] if x["cat"] == cat]:
+            note = (it.get("note") or "").strip()
             note_txt = note if note else "Sin novedades."
             lines.append(f"- {status_badge(it['status'])} {it['name']} ({it['task']}): {note_txt}")
 
     lines.append("\n2) REQUERIMIENTOS / COMPRAS")
     lines.append("---------------------------------")
-    needs = st.session_state.needs.strip() or "Sin requerimientos reportados."
+    needs = (st.session_state["needs"] or "").strip() or "Sin requerimientos reportados."
     lines.append(needs)
 
     lines.append("\n3) INCIDENCIAS RR.HH.")
     lines.append("---------------------------------")
-    if not st.session_state.incidences:
+    incidences = st.session_state["incidences"]
+    if not incidences:
         lines.append("Sin incidencias registradas.")
     else:
-        # list incidences by employee, newest first
-        sorted_inc = sorted(st.session_state.incidences, key=lambda x: x["ts"], reverse=True)
+        sorted_inc = sorted(incidences, key=lambda x: x["ts"], reverse=True)
         for inc in sorted_inc:
             ts = inc["ts"].strftime("%Y-%m-%d %H:%M")
             lines.append(f"- {ts} | {inc['employee']}: {inc['detail']}")
@@ -113,9 +111,9 @@ def build_report_text():
 # ---------------------------
 init_state()
 
-# Header
 ok, fail, pending, total = get_stats()
 
+# Header
 st.markdown(
     f"""
     <div style="padding:18px 18px 10px 18px; border-radius:16px; background: linear-gradient(90deg, #4338ca, #4f46e5); color:white;">
@@ -142,8 +140,9 @@ st.markdown(
 
 st.write("")
 
-# Tabs
-tab_checklist, tab_rrhh, tab_report = st.tabs(["✅ Levantamiento Técnico", "👥 RR.HH. (Incidencias)", "🧾 Generar Informe"])
+tab_checklist, tab_rrhh, tab_report = st.tabs(
+    ["✅ Levantamiento Técnico", "👥 RR.HH. (Incidencias)", "🧾 Generar Informe"]
+)
 
 # ---------------------------
 # Checklist tab
@@ -154,13 +153,16 @@ with tab_checklist:
         st.subheader("Checklist Técnico (por áreas)")
         st.caption("Marca OK / FALLA / PENDIENTE, agrega observaciones y (opcional) una foto por ítem.")
     with c2:
-        st.session_state.report_date = st.date_input("Fecha del informe", value=st.session_state.report_date)
+        st.session_state["report_date"] = st.date_input(
+            "Fecha del informe",
+            value=st.session_state["report_date"]
+        )
 
     categories = ["Críticos", "Accesos", "Higiene", "Comunes", "Infra"]
 
     for cat in categories:
         st.markdown(f"### {cat}")
-        for it in [x for x in st.session_state.items if x["cat"] == cat]:
+        for it in [x for x in st.session_state["checklist_items"] if x["cat"] == cat]:
             box = st.container(border=True)
             with box:
                 left, mid, right = st.columns([2.2, 2.2, 1.6], gap="medium")
@@ -170,7 +172,6 @@ with tab_checklist:
                     st.caption(it["task"])
 
                 with mid:
-                    # Status selector
                     status = st.radio(
                         "Estado",
                         options=["pending", "ok", "fail"],
@@ -182,7 +183,6 @@ with tab_checklist:
                     )
                     it["status"] = status
 
-                    # Note
                     it["note"] = st.text_input(
                         "Observación",
                         value=it["note"],
@@ -192,7 +192,6 @@ with tab_checklist:
                     )
 
                 with right:
-                    # Visual badge
                     st.markdown(
                         f"""
                         <div style="padding:10px 12px; border-radius:12px; border:1px solid #e2e8f0;">
@@ -205,7 +204,6 @@ with tab_checklist:
                         unsafe_allow_html=True,
                     )
 
-                    # Optional photo upload (kept in session)
                     uploaded = st.file_uploader(
                         "Foto (opcional)",
                         type=["png", "jpg", "jpeg"],
@@ -218,17 +216,16 @@ with tab_checklist:
 
         st.divider()
 
-    # Quick actions
     colA, colB, colC = st.columns([1, 1, 2])
     with colA:
         if st.button("🔄 Marcar todo como Pendiente"):
-            for it in st.session_state.items:
+            for it in st.session_state["checklist_items"]:
                 it["status"] = "pending"
             st.rerun()
 
     with colB:
         if st.button("✅ Marcar todo como OK"):
-            for it in st.session_state.items:
+            for it in st.session_state["checklist_items"]:
                 it["status"] = "ok"
             st.rerun()
 
@@ -251,8 +248,9 @@ with tab_rrhh:
             if not employee.strip() or not detail.strip():
                 st.error("Por favor completa nombre del empleado y detalle.")
             else:
-                new_id = (max([i["id"] for i in st.session_state.incidences]) + 1) if st.session_state.incidences else 1
-                st.session_state.incidences.append(
+                incidences = st.session_state["incidences"]
+                new_id = (max([i["id"] for i in incidences]) + 1) if incidences else 1
+                st.session_state["incidences"].append(
                     {"id": new_id, "employee": employee.strip(), "detail": detail.strip(), "ts": datetime.now()}
                 )
                 st.success("Incidencia registrada.")
@@ -260,11 +258,10 @@ with tab_rrhh:
     st.write("")
     st.markdown("#### Incidencias registradas")
 
-    if not st.session_state.incidences:
+    if not st.session_state["incidences"]:
         st.warning("Aún no hay incidencias.")
     else:
-        # Show newest first
-        for inc in sorted(st.session_state.incidences, key=lambda x: x["ts"], reverse=True):
+        for inc in sorted(st.session_state["incidences"], key=lambda x: x["ts"], reverse=True):
             with st.container(border=True):
                 c1, c2, c3 = st.columns([2, 6, 1.2])
                 with c1:
@@ -274,7 +271,7 @@ with tab_rrhh:
                     st.write(inc["detail"])
                 with c3:
                     if st.button("🗑️", key=f"del_inc_{inc['id']}", help="Eliminar incidencia"):
-                        st.session_state.incidences = [x for x in st.session_state.incidences if x["id"] != inc["id"]]
+                        st.session_state["incidences"] = [x for x in st.session_state["incidences"] if x["id"] != inc["id"]]
                         st.rerun()
 
 # ---------------------------
@@ -284,9 +281,9 @@ with tab_report:
     st.subheader("Generador de Informe (copiar y enviar al Comité)")
     st.caption("Se arma automáticamente con el checklist + requerimientos/compras + incidencias RR.HH.")
 
-    st.session_state.needs = st.text_area(
+    st.session_state["needs"] = st.text_area(
         "Requerimientos y compras (texto libre)",
-        value=st.session_state.needs,
+        value=st.session_state["needs"],
         height=140,
         placeholder="Ej: Solicitar mantención ascensores / compra de luminarias / repuestos bomba…",
     )
@@ -301,13 +298,16 @@ with tab_report:
         st.download_button(
             "⬇️ Descargar .txt",
             data=report_text.encode("utf-8"),
-            file_name=f"informe_edificio_{st.session_state.report_date.isoformat()}.txt",
+            file_name=f"informe_edificio_{st.session_state['report_date'].isoformat()}.txt",
             mime="text/plain",
         )
     with col2:
-        # Streamlit has no native "copy to clipboard" due browser limitations without components.
         st.info("Tip: puedes seleccionar el texto y copiarlo (Ctrl+C).")
     with col3:
         st.success("Siguiente paso (cuando quieras): generar PDF/Word desde este mismo texto.")
 
-st.markdown("<div style='opacity:0.6; font-size:12px; margin-top:18px;'>Plataforma de Control Interno v1.0 (demo) • Streamlit</div>", unsafe_allow_html=True)
+st.markdown(
+    "<div style='opacity:0.6; font-size:12px; margin-top:18px;'>Plataforma de Control Interno v1.0 (demo) • Streamlit</div>",
+    unsafe_allow_html=True
+)
+
