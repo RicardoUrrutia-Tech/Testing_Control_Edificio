@@ -1,5 +1,18 @@
 import streamlit as st
 from datetime import datetime, date
+from io import BytesIO
+
+from PIL import Image
+
+# PDF (ReportLab)
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import cm
+from reportlab.pdfgen import canvas
+
+# Word (python-docx)
+from docx import Document
+from docx.shared import Inches
+
 
 st.set_page_config(
     page_title="Control Edificio Pro (Streamlit)",
@@ -8,7 +21,7 @@ st.set_page_config(
 )
 
 # ---------------------------
-# Helpers
+# Helpers (State)
 # ---------------------------
 def init_state():
     if "report_date" not in st.session_state:
@@ -35,12 +48,15 @@ def init_state():
         ]
 
     if "incidences" not in st.session_state:
-        st.session_state["incidences"] = []  # list of dicts: {id, employee, detail, ts}
+        st.session_state["incidences"] = []  # {id, employee, detail, ts}
 
     if "needs" not in st.session_state:
         st.session_state["needs"] = ""
 
 
+# ---------------------------
+# Helpers (UI/Stats/Text)
+# ---------------------------
 def status_badge(status: str) -> str:
     if status == "ok":
         return "🟢 OK"
@@ -51,10 +67,10 @@ def status_badge(status: str) -> str:
 
 def status_color(status: str) -> str:
     if status == "ok":
-        return "#16a34a"  # green
+        return "#16a34a"
     if status == "fail":
-        return "#dc2626"  # red
-    return "#64748b"     # slate
+        return "#dc2626"
+    return "#64748b"
 
 
 def get_stats():
@@ -98,8 +114,7 @@ def build_report_text():
     if not incidences:
         lines.append("Sin incidencias registradas.")
     else:
-        sorted_inc = sorted(incidences, key=lambda x: x["ts"], reverse=True)
-        for inc in sorted_inc:
+        for inc in sorted(incidences, key=lambda x: x["ts"], reverse=True):
             ts = inc["ts"].strftime("%Y-%m-%d %H:%M")
             lines.append(f"- {ts} | {inc['employee']}: {inc['detail']}")
 
@@ -107,13 +122,146 @@ def build_report_text():
 
 
 # ---------------------------
+# Helpers (PDF/DOCX)
+# ---------------------------
+def _wrap_pdf_line(text: str, max_chars: int):
+    import textwrap
+    return textwrap.wrap(text, width=max_chars) or [""]
+
+
+def generate_pdf_bytes(report_text: str) -> bytes:
+    """
+    PDF con texto + fotos anexas.
+    """
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+
+    x = 2 * cm
+    y = height - 2 * cm
+    line_h = 12
+
+    def new_page():
+        nonlocal y
+        c.showPage()
+        y = height - 2 * cm
+
+    # Título
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(x, y, "INFORME DE GESTIÓN / CONTROL DE INSTALACIONES")
+    y -= 18
+    c.setFont("Helvetica", 10)
+
+    # Texto
+    for raw_line in report_text.split("\n"):
+        if raw_line.strip() == "":
+            if y < 2 * cm:
+                new_page()
+            y -= line_h
+            continue
+
+        for ln in _wrap_pdf_line(raw_line, 110):
+            if y < 2 * cm:
+                new_page()
+            c.drawString(x, y, ln)
+            y -= line_h
+
+    # Fotos
+    items = st.session_state["checklist_items"]
+    photos = [it for it in items if it.get("photo")]
+
+    if photos:
+        if y < 5 * cm:
+            new_page()
+
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(x, y, "ANEXO: FOTOS")
+        y -= 18
+        c.setFont("Helvetica", 10)
+
+        for it in photos:
+            header = f"#{it['id']} - {it['cat']} - {it['name']} ({it['task']})"
+            note = (it.get("note") or "").strip()
+            note_txt = f"Obs: {note}" if note else "Obs: (sin observaciones)"
+
+            for ln in _wrap_pdf_line(header, 110):
+                if y < 2 * cm:
+                    new_page()
+                c.drawString(x, y, ln)
+                y -= line_h
+
+            for ln in _wrap_pdf_line(note_txt, 110):
+                if y < 2 * cm:
+                    new_page()
+                c.drawString(x, y, ln)
+                y -= line_h
+
+            img_bytes = it["photo"]
+            img = Image.open(BytesIO(img_bytes)).convert("RGB")
+
+            max_w = 16 * cm
+            max_h = 9 * cm
+            iw, ih = img.size
+            scale = min(max_w / iw, max_h / ih)
+            dw, dh = iw * scale, ih * scale
+
+            if y - dh < 2 * cm:
+                new_page()
+
+            img_buf = BytesIO()
+            img.save(img_buf, format="JPEG", quality=85)
+            img_buf.seek(0)
+
+            c.drawInlineImage(img_buf, x, y - dh, width=dw, height=dh)
+            y -= (dh + 18)
+
+    c.save()
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def generate_docx_bytes(report_text: str) -> bytes:
+    """
+    DOCX con texto + fotos anexas.
+    """
+    doc = Document()
+    doc.add_heading("Informe de Gestión / Control de Instalaciones", level=1)
+
+    for line in report_text.split("\n"):
+        doc.add_paragraph(line)
+
+    items = st.session_state["checklist_items"]
+    photos = [it for it in items if it.get("photo")]
+
+    if photos:
+        doc.add_page_break()
+        doc.add_heading("Anexo: Fotos", level=2)
+
+        for it in photos:
+            doc.add_paragraph(f"#{it['id']} - {it['cat']} - {it['name']} ({it['task']})")
+            note = (it.get("note") or "").strip()
+            doc.add_paragraph(f"Obs: {note}" if note else "Obs: (sin observaciones)")
+
+            img = Image.open(BytesIO(it["photo"])).convert("RGB")
+            img_buf = BytesIO()
+            img.save(img_buf, format="PNG")
+            img_buf.seek(0)
+
+            doc.add_picture(img_buf, width=Inches(5.8))
+            doc.add_paragraph("")
+
+    out = BytesIO()
+    doc.save(out)
+    out.seek(0)
+    return out.getvalue()
+
+
+# ---------------------------
 # UI
 # ---------------------------
 init_state()
-
 ok, fail, pending, total = get_stats()
 
-# Header
 st.markdown(
     f"""
     <div style="padding:18px 18px 10px 18px; border-radius:16px; background: linear-gradient(90deg, #4338ca, #4f46e5); color:white;">
@@ -145,7 +293,7 @@ tab_checklist, tab_rrhh, tab_report = st.tabs(
 )
 
 # ---------------------------
-# Checklist tab
+# Checklist
 # ---------------------------
 with tab_checklist:
     c1, c2 = st.columns([2, 1])
@@ -230,10 +378,10 @@ with tab_checklist:
             st.rerun()
 
     with colC:
-        st.info("Tip: sin base de datos, el contenido se mantiene mientras no cierres/recargues la pestaña. Para persistencia real (1 hora o más), se integra Firebase/Sheets.")
+        st.info("Tip: sin base de datos, el contenido se mantiene mientras no cierres/recargues la pestaña. Para persistencia real, se integra Firebase/Sheets.")
 
 # ---------------------------
-# RR.HH tab
+# RR.HH - Incidences
 # ---------------------------
 with tab_rrhh:
     st.subheader("Gestión RR.HH. – Incidencias manuales")
@@ -275,11 +423,11 @@ with tab_rrhh:
                         st.rerun()
 
 # ---------------------------
-# Report tab
+# Report
 # ---------------------------
 with tab_report:
-    st.subheader("Generador de Informe (copiar y enviar al Comité)")
-    st.caption("Se arma automáticamente con el checklist + requerimientos/compras + incidencias RR.HH.")
+    st.subheader("Generador de Informe (descarga PDF o Word con fotos)")
+    st.caption("Se arma automáticamente con el checklist + requerimientos/compras + incidencias RR.HH. Incluye fotos en un anexo.")
 
     st.session_state["needs"] = st.text_area(
         "Requerimientos y compras (texto libre)",
@@ -290,21 +438,34 @@ with tab_report:
 
     report_text = build_report_text()
 
-    st.markdown("#### Vista previa (lista para copiar)")
+    st.markdown("#### Vista previa (texto)")
     st.code(report_text, language="text")
 
-    col1, col2, col3 = st.columns([1, 1, 2])
+    fmt = st.radio("Formato de descarga", options=["PDF", "Word (DOCX)"], horizontal=True)
+
+    file_base = f"informe_edificio_{st.session_state['report_date'].isoformat()}"
+
+    col1, col2 = st.columns([1, 2])
     with col1:
-        st.download_button(
-            "⬇️ Descargar .txt",
-            data=report_text.encode("utf-8"),
-            file_name=f"informe_edificio_{st.session_state['report_date'].isoformat()}.txt",
-            mime="text/plain",
-        )
+        if fmt == "PDF":
+            pdf_bytes = generate_pdf_bytes(report_text)
+            st.download_button(
+                "⬇️ Descargar PDF (con fotos)",
+                data=pdf_bytes,
+                file_name=f"{file_base}.pdf",
+                mime="application/pdf",
+            )
+        else:
+            docx_bytes = generate_docx_bytes(report_text)
+            st.download_button(
+                "⬇️ Descargar Word (DOCX) (con fotos)",
+                data=docx_bytes,
+                file_name=f"{file_base}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+
     with col2:
-        st.info("Tip: puedes seleccionar el texto y copiarlo (Ctrl+C).")
-    with col3:
-        st.success("Siguiente paso (cuando quieras): generar PDF/Word desde este mismo texto.")
+        st.info("Tip: si subes muchas fotos grandes, el archivo puede quedar pesado. Si quieres, puedo agregar redimensionado/compresión automática.")
 
 st.markdown(
     "<div style='opacity:0.6; font-size:12px; margin-top:18px;'>Plataforma de Control Interno v1.0 (demo) • Streamlit</div>",
