@@ -15,6 +15,10 @@ from reportlab.lib.units import cm
 from docx import Document
 from docx.shared import Inches
 
+# Excel (openpyxl)
+from openpyxl import Workbook, load_workbook
+from openpyxl.worksheet.datavalidation import DataValidation
+
 
 st.set_page_config(
     page_title="Control Edificio Pro (Streamlit)",
@@ -23,31 +27,96 @@ st.set_page_config(
 )
 
 # ---------------------------
+# Master data (defaults)
+# ---------------------------
+CATEGORIES = ["Críticos", "Accesos", "Higiene", "Comunes", "Infra"]
+
+DEFAULT_INSTALLATIONS = [
+    {"Tipo": "Críticos", "Instalación": "Sala de Bombas", "Tarea": "Presión y alternancia"},
+    {"Tipo": "Críticos", "Instalación": "Sala de Calderas", "Tarea": "Temperatura y fugas"},
+    {"Tipo": "Críticos", "Instalación": "Generador", "Tarea": "Nivel petróleo y batería"},
+    {"Tipo": "Críticos", "Instalación": "PEAS (Presurización)", "Tarea": "Prueba de ventilador"},
+    {"Tipo": "Críticos", "Instalación": "Ascensores (2)", "Tarea": "Nivelación y limpieza rieles"},
+    {"Tipo": "Accesos", "Instalación": "Portones (2)", "Tarea": "Sensores y velocidad"},
+    {"Tipo": "Accesos", "Instalación": "Control Biométrico", "Tarea": "Lectores huella/tarjeta"},
+    {"Tipo": "Higiene", "Instalación": "Sala de Basura", "Tarea": "Desinfección y contenedores"},
+    {"Tipo": "Higiene", "Instalación": "Ductos (20 pisos)", "Tarea": "Cierre de escotillas"},
+    {"Tipo": "Comunes", "Instalación": "Piscina", "Tarea": "Parámetros Cl/pH"},
+    {"Tipo": "Comunes", "Instalación": "Quincho / Eventos", "Tarea": "Mobiliario e higiene"},
+    {"Tipo": "Comunes", "Instalación": "Gym / Sauna", "Tarea": "Máquinas y tableros"},
+    {"Tipo": "Infra", "Instalación": "Pasillos (1-20)", "Tarea": "Luces de emergencia"},
+    {"Tipo": "Infra", "Instalación": "Subterráneo", "Tarea": "Filtraciones y limpieza"},
+    {"Tipo": "Infra", "Instalación": "Jardines", "Tarea": "Riego programado"},
+]
+
+
+# ---------------------------
 # Helpers (State)
 # ---------------------------
+def build_checklist_items_from_master(master_rows):
+    """
+    master_rows: list of dicts with keys Tipo, Instalación, Tarea (optional)
+    Builds session checklist item dicts (id, cat, name, task, status, note, photo)
+    """
+    items = []
+    next_id = 1
+    for r in master_rows:
+        cat = (r.get("Tipo") or "").strip()
+        name = (r.get("Instalación") or "").strip()
+        task = (r.get("Tarea") or "").strip() or "—"
+
+        if not cat or not name:
+            continue
+
+        # Normaliza cat a las categorías permitidas si viene con variantes
+        if cat not in CATEGORIES:
+            # Si viene "Espacio Común" etc., intenta mapear a Comunes
+            mapped = map_tipo_to_category(cat)
+            cat = mapped
+
+        items.append({
+            "id": next_id,
+            "cat": cat,
+            "name": name,
+            "task": task,
+            "status": "pending",
+            "note": "",
+            "photo": None,
+        })
+        next_id += 1
+
+    return items
+
+
+def map_tipo_to_category(tipo: str) -> str:
+    """
+    Mapea 'Tipo' libre a una categoría soportada.
+    """
+    t = (tipo or "").strip().lower()
+    if "crit" in t:
+        return "Críticos"
+    if "infra" in t:
+        return "Infra"
+    if "comun" in t or "común" in t or "espacio" in t:
+        return "Comunes"
+    if "hig" in t or "aseo" in t or "basura" in t:
+        return "Higiene"
+    if "acces" in t or "port" in t:
+        return "Accesos"
+    # fallback
+    return "Comunes"
+
+
 def init_state():
+    if "community_name" not in st.session_state:
+        st.session_state["community_name"] = "Comunidad (sin nombre)"
+
     if "report_date" not in st.session_state:
         st.session_state["report_date"] = date.today()
 
-    # IMPORTANTE: NO usar key "items" (colisiona con st.session_state.items())
+    # checklist_items: se construye desde defaults al inicio
     if "checklist_items" not in st.session_state:
-        st.session_state["checklist_items"] = [
-            {"id": 1, "cat": "Críticos", "name": "Sala de Bombas", "task": "Presión y alternancia", "status": "pending", "note": "", "photo": None},
-            {"id": 2, "cat": "Críticos", "name": "Sala de Calderas", "task": "Temperatura y fugas", "status": "pending", "note": "", "photo": None},
-            {"id": 3, "cat": "Críticos", "name": "Generador", "task": "Nivel petróleo y batería", "status": "pending", "note": "", "photo": None},
-            {"id": 4, "cat": "Críticos", "name": "PEAS (Presurización)", "task": "Prueba de ventilador", "status": "pending", "note": "", "photo": None},
-            {"id": 5, "cat": "Críticos", "name": "Ascensores (2)", "task": "Nivelación y limpieza rieles", "status": "pending", "note": "", "photo": None},
-            {"id": 6, "cat": "Accesos", "name": "Portones (2)", "task": "Sensores y velocidad", "status": "pending", "note": "", "photo": None},
-            {"id": 7, "cat": "Accesos", "name": "Control Biométrico", "task": "Lectores huella/tarjeta", "status": "pending", "note": "", "photo": None},
-            {"id": 8, "cat": "Higiene", "name": "Sala de Basura", "task": "Desinfección y contenedores", "status": "pending", "note": "", "photo": None},
-            {"id": 9, "cat": "Higiene", "name": "Ductos (20 pisos)", "task": "Cierre de escotillas", "status": "pending", "note": "", "photo": None},
-            {"id": 10, "cat": "Comunes", "name": "Piscina", "task": "Parámetros Cl/pH", "status": "pending", "note": "", "photo": None},
-            {"id": 11, "cat": "Comunes", "name": "Quincho / Eventos", "task": "Mobiliario e higiene", "status": "pending", "note": "", "photo": None},
-            {"id": 12, "cat": "Comunes", "name": "Gym / Sauna", "task": "Máquinas y tableros", "status": "pending", "note": "", "photo": None},
-            {"id": 13, "cat": "Infra", "name": "Pasillos (1-20)", "task": "Luces de emergencia", "status": "pending", "note": "", "photo": None},
-            {"id": 14, "cat": "Infra", "name": "Subterráneo", "task": "Filtraciones y limpieza", "status": "pending", "note": "", "photo": None},
-            {"id": 15, "cat": "Infra", "name": "Jardines", "task": "Riego programado", "status": "pending", "note": "", "photo": None},
-        ]
+        st.session_state["checklist_items"] = build_checklist_items_from_master(DEFAULT_INSTALLATIONS)
 
     if "incidences" not in st.session_state:
         st.session_state["incidences"] = []  # {id, employee, detail, ts}
@@ -86,10 +155,12 @@ def get_stats():
 
 def build_report_text():
     rd = st.session_state["report_date"]
+    community = st.session_state["community_name"]
     ok, fail, pending, total = get_stats()
 
     lines = []
     lines.append("--- INFORME DE GESTIÓN / CONTROL DE INSTALACIONES ---")
+    lines.append(f"COMUNIDAD: {community}")
     lines.append(f"FECHA: {rd.isoformat()}")
     lines.append("")
     lines.append(f"RESUMEN: OK={ok} | FALLAS={fail} | PENDIENTES={pending} | TOTAL={total}")
@@ -97,8 +168,7 @@ def build_report_text():
     lines.append("1) CHECKLIST TÉCNICO")
     lines.append("---------------------------------")
 
-    categories = ["Críticos", "Accesos", "Higiene", "Comunes", "Infra"]
-    for cat in categories:
+    for cat in CATEGORIES:
         lines.append(f"\n[{cat}]")
         for it in [x for x in st.session_state["checklist_items"] if x["cat"] == cat]:
             note = (it.get("note") or "").strip()
@@ -121,6 +191,101 @@ def build_report_text():
             lines.append(f"- {ts} | {inc['employee']}: {inc['detail']}")
 
     return "\n".join(lines)
+
+
+# ---------------------------
+# Excel (Master data template)
+# ---------------------------
+def export_master_template_bytes() -> bytes:
+    """
+    Crea plantilla XLSX para Datos Maestros:
+    Columnas: Tipo, Instalación, Tarea (opcional)
+    Tipo tiene validación (dropdown) con categorías soportadas.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "DatosMaestros"
+
+    headers = ["Tipo", "Instalación", "Tarea"]
+    ws.append(headers)
+
+    # precarga con defaults (si el usuario quiere usarlos)
+    for r in DEFAULT_INSTALLATIONS:
+        ws.append([r.get("Tipo", ""), r.get("Instalación", ""), r.get("Tarea", "")])
+
+    # Ajustes simples
+    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["B"].width = 32
+    ws.column_dimensions["C"].width = 34
+
+    # Validación de datos (dropdown) en Tipo
+    allowed = ",".join(CATEGORIES)
+    dv = DataValidation(type="list", formula1=f'"{allowed}"', allow_blank=False)
+    ws.add_data_validation(dv)
+
+    # Aplica validación a un rango “amplio” (por si agregan filas)
+    dv.add("A2:A500")
+
+    # Guarda a bytes
+    bio = BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
+
+
+def import_master_from_xlsx(uploaded_file_bytes: bytes):
+    """
+    Lee XLSX y reemplaza checklist_items por lo que venga en la hoja DatosMaestros (o la primera hoja).
+    Espera columnas: Tipo, Instalación, (Tarea opcional).
+    """
+    bio = BytesIO(uploaded_file_bytes)
+    wb = load_workbook(bio, data_only=True)
+
+    if "DatosMaestros" in wb.sheetnames:
+        ws = wb["DatosMaestros"]
+    else:
+        ws = wb[wb.sheetnames[0]]
+
+    # leer headers
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows or len(rows) < 2:
+        raise ValueError("La plantilla no contiene datos.")
+
+    header = [str(x).strip() if x is not None else "" for x in rows[0]]
+    # indices
+    def idx(col):
+        try:
+            return header.index(col)
+        except ValueError:
+            return None
+
+    i_tipo = idx("Tipo")
+    i_inst = idx("Instalación")
+    i_task = idx("Tarea")  # opcional
+
+    if i_tipo is None or i_inst is None:
+        raise ValueError("La plantilla debe incluir columnas 'Tipo' y 'Instalación'.")
+
+    master = []
+    for r in rows[1:]:
+        if r is None:
+            continue
+        tipo = (r[i_tipo] if i_tipo < len(r) else "") or ""
+        inst = (r[i_inst] if i_inst < len(r) else "") or ""
+        task = (r[i_task] if (i_task is not None and i_task < len(r)) else "") or ""
+        tipo = str(tipo).strip()
+        inst = str(inst).strip()
+        task = str(task).strip()
+
+        if not tipo or not inst:
+            continue
+
+        master.append({"Tipo": tipo, "Instalación": inst, "Tarea": task})
+
+    if not master:
+        raise ValueError("No se encontraron registros válidos (Tipo + Instalación).")
+
+    st.session_state["checklist_items"] = build_checklist_items_from_master(master)
 
 
 # ---------------------------
@@ -151,7 +316,6 @@ def _make_rl_image(photo_bytes: bytes, max_w: float, max_h: float, small_style):
     img.save(buf, format="JPEG", quality=85)
     buf.seek(0)
 
-    # Import local para evitar warnings en algunos entornos
     from reportlab.platypus import Image as RLImage
     return RLImage(buf, width=w, height=h)
 
@@ -205,14 +369,16 @@ def generate_pdf_bytes_visual() -> bytes:
 
     elements = []
     rd = st.session_state["report_date"]
+    community = st.session_state["community_name"]
     ok, fail, pending, total = get_stats()
 
     # Title
     elements.append(Paragraph("Control Edificio Pro – Informe Visual", title_style))
+    elements.append(Paragraph(f"<b>Comunidad:</b> {community}", normal))
     elements.append(Paragraph(f"<b>Fecha:</b> {rd.isoformat()}", normal))
     elements.append(Spacer(1, 8))
 
-    # Summary "cards" (as a 2-column small table)
+    # Summary cards
     summary_data = [
         [
             Paragraph("<b>Sistemas OK</b>", small),
@@ -243,23 +409,21 @@ def generate_pdf_bytes_visual() -> bytes:
     elements.append(Spacer(1, 12))
 
     # Table layout
-    col1_w = 6.2 * cm   # Instalación
-    col2_w = 6.2 * cm   # Estado+Obs
-    col3_w = 5.6 * cm   # Foto
+    col1_w = 6.2 * cm
+    col2_w = 6.2 * cm
+    col3_w = 5.6 * cm
     photo_max_w = col3_w - 0.3 * cm
     photo_max_h = 3.6 * cm
 
-    categories = ["Críticos", "Accesos", "Higiene", "Comunes", "Infra"]
     items = st.session_state["checklist_items"]
 
-    for cat in categories:
+    for cat in CATEGORIES:
         cat_items = [x for x in items if x["cat"] == cat]
         if not cat_items:
             continue
 
         elements.append(Paragraph(cat, cat_style))
 
-        # Header row
         data = [
             [
                 Paragraph("<b>Instalación</b>", normal),
@@ -268,7 +432,7 @@ def generate_pdf_bytes_visual() -> bytes:
             ]
         ]
 
-        fail_row_indices = []  # for styling fail rows background
+        fail_row_indices = []
 
         for it in cat_items:
             inst = Paragraph(
@@ -284,11 +448,8 @@ def generate_pdf_bytes_visual() -> bytes:
             )
 
             img_cell = _make_rl_image(it.get("photo"), photo_max_w, photo_max_h, small)
+            data.append([inst, mid, img_cell])
 
-            row = [inst, mid, img_cell]
-            data.append(row)
-
-            # Row index in table (0 is header)
             if it["status"] == "fail":
                 fail_row_indices.append(len(data) - 1)
 
@@ -305,8 +466,7 @@ def generate_pdf_bytes_visual() -> bytes:
             ("VALIGN", (0, 1), (-1, -1), "TOP"),
         ]
 
-        # Soft red background for FAIL rows
-        soft_red = colors.HexColor("#fee2e2")  # light red
+        soft_red = colors.HexColor("#fee2e2")
         for r in fail_row_indices:
             style_cmds.append(("BACKGROUND", (0, r), (-1, r), soft_red))
 
@@ -315,7 +475,7 @@ def generate_pdf_bytes_visual() -> bytes:
         elements.append(table)
         elements.append(Spacer(1, 10))
 
-    # Footer sections (no structural changes besides PDF formatting)
+    # Footer sections
     elements.append(Spacer(1, 6))
     elements.append(Paragraph("Requerimientos / Compras", cat_style))
     needs = (st.session_state["needs"] or "").strip() or "Sin requerimientos reportados."
@@ -337,7 +497,7 @@ def generate_pdf_bytes_visual() -> bytes:
 
 
 # ---------------------------
-# Word (same as before: text + photo annex)
+# Word (texto + anexo fotos, mantiene tu versión actual)
 # ---------------------------
 def generate_docx_bytes(report_text: str) -> bytes:
     doc = Document()
@@ -378,7 +538,7 @@ def generate_docx_bytes(report_text: str) -> bytes:
 init_state()
 ok, fail, pending, total = get_stats()
 
-# Header (same as before)
+# Header
 st.markdown(
     f"""
     <div style="padding:18px 18px 10px 18px; border-radius:16px; background: linear-gradient(90deg, #4338ca, #4f46e5); color:white;">
@@ -402,11 +562,11 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
 st.write("")
 
-tab_checklist, tab_rrhh, tab_report = st.tabs(
-    ["✅ Levantamiento Técnico", "👥 RR.HH. (Incidencias)", "🧾 Generar Informe"]
+# Tabs
+tab_checklist, tab_rrhh, tab_report, tab_master = st.tabs(
+    ["✅ Levantamiento Técnico", "👥 RR.HH. (Incidencias)", "🧾 Generar Informe", "⚙️ Datos Maestros (Instalaciones)"]
 )
 
 # ---------------------------
@@ -418,14 +578,15 @@ with tab_checklist:
         st.subheader("Checklist Técnico (por áreas)")
         st.caption("Marca OK / FALLA / PENDIENTE, agrega observaciones y (opcional) una foto por ítem.")
     with c2:
-        st.session_state["report_date"] = st.date_input(
-            "Fecha del informe",
-            value=st.session_state["report_date"]
-        )
+        st.session_state["report_date"] = st.date_input("Fecha del informe", value=st.session_state["report_date"])
 
-    categories = ["Críticos", "Accesos", "Higiene", "Comunes", "Infra"]
+    st.session_state["community_name"] = st.text_input(
+        "Nombre de la comunidad",
+        value=st.session_state["community_name"],
+        placeholder="Ej: Edificio Los Castaños 123",
+    )
 
-    for cat in categories:
+    for cat in CATEGORIES:
         st.markdown(f"### {cat}")
         for it in [x for x in st.session_state["checklist_items"] if x["cat"] == cat]:
             box = st.container(border=True)
@@ -497,6 +658,7 @@ with tab_checklist:
     with colC:
         st.info("Tip: sin base de datos, el contenido se mantiene mientras no cierres/recargues la pestaña. Para persistencia real, se integra Firebase/Sheets.")
 
+
 # ---------------------------
 # RR.HH - Incidences
 # ---------------------------
@@ -539,6 +701,7 @@ with tab_rrhh:
                         st.session_state["incidences"] = [x for x in st.session_state["incidences"] if x["id"] != inc["id"]]
                         st.rerun()
 
+
 # ---------------------------
 # Report
 # ---------------------------
@@ -560,7 +723,7 @@ with tab_report:
 
     fmt = st.radio("Formato de descarga", options=["PDF (Visual)", "Word (DOCX)"], horizontal=True)
 
-    file_base = f"informe_edificio_{st.session_state['report_date'].isoformat()}"
+    file_base = f"informe_{st.session_state['community_name'].strip().replace(' ', '_')}_{st.session_state['report_date'].isoformat()}"
 
     col1, col2 = st.columns([1, 2])
     with col1:
@@ -582,7 +745,117 @@ with tab_report:
             )
 
     with col2:
-        st.info("Tip: si subes muchas fotos grandes, el PDF/DOCX puede quedar pesado. Si quieres, puedo agregar redimensionado/compresión automática.")
+        st.info("Tip: si subes muchas fotos grandes, el PDF/DOCX puede quedar pesado. Si quieres, agregamos compresión automática.")
+
+
+# ---------------------------
+# Master Data (Instalaciones)
+# ---------------------------
+with tab_master:
+    st.subheader("Datos Maestros de Instalaciones")
+    st.caption("Puedes descargar una plantilla XLSX, editarla y volver a cargarla para personalizar el checklist. También puedes agregar/eliminar instalaciones aquí mismo.")
+
+    # Descargar plantilla
+    template_bytes = export_master_template_bytes()
+    st.download_button(
+        "⬇️ Descargar plantilla XLSX (Datos Maestros)",
+        data=template_bytes,
+        file_name="plantilla_datos_maestros_instalaciones.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    st.write("")
+    # Subir plantilla
+    uploaded_xlsx = st.file_uploader(
+        "Cargar plantilla XLSX (reemplaza las instalaciones actuales)",
+        type=["xlsx"],
+        help="Debe contener columnas: Tipo, Instalación (Tarea opcional).",
+    )
+
+    if uploaded_xlsx is not None:
+        try:
+            import_master_from_xlsx(uploaded_xlsx.getvalue())
+            st.success("Datos maestros cargados. Se actualizó el checklist.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"No se pudo cargar la plantilla: {e}")
+
+    st.divider()
+
+    # Agregar instalación manual
+    st.markdown("### ➕ Agregar instalación (manual)")
+    with st.form("add_installation"):
+        colA, colB, colC = st.columns([1.3, 2.2, 2.2])
+        with colA:
+            tipo = st.selectbox("Tipo", options=CATEGORIES)
+        with colB:
+            instalacion = st.text_input("Instalación", placeholder="Ej: Sala de Tableros")
+        with colC:
+            tarea = st.text_input("Tarea (opcional)", placeholder="Ej: Revisión térmica / limpieza / fugas")
+
+        add = st.form_submit_button("Agregar")
+        if add:
+            if not instalacion.strip():
+                st.error("Debes indicar el nombre de la instalación.")
+            else:
+                items = st.session_state["checklist_items"]
+                new_id = max([x["id"] for x in items], default=0) + 1
+                items.append({
+                    "id": new_id,
+                    "cat": tipo,
+                    "name": instalacion.strip(),
+                    "task": tarea.strip() or "—",
+                    "status": "pending",
+                    "note": "",
+                    "photo": None,
+                })
+                st.success("Instalación agregada.")
+                st.rerun()
+
+    st.divider()
+
+    # Eliminar instalaciones
+    st.markdown("### 🗑️ Quitar instalaciones")
+    items = st.session_state["checklist_items"]
+    options = [f"#{x['id']} | {x['cat']} | {x['name']}" for x in items]
+    to_remove = st.multiselect("Selecciona instalaciones a eliminar", options=options)
+
+    if st.button("Eliminar seleccionadas"):
+        if not to_remove:
+            st.warning("No seleccionaste ninguna.")
+        else:
+            ids = set()
+            for s in to_remove:
+                # formato: "#id | ..."
+                try:
+                    part = s.split("|")[0].strip()
+                    rid = int(part.replace("#", "").strip())
+                    ids.add(rid)
+                except:
+                    pass
+
+            st.session_state["checklist_items"] = [x for x in st.session_state["checklist_items"] if x["id"] not in ids]
+            # Reasignar IDs (limpio y ordenado)
+            rebuilt = []
+            nid = 1
+            for x in st.session_state["checklist_items"]:
+                x["id"] = nid
+                rebuilt.append(x)
+                nid += 1
+            st.session_state["checklist_items"] = rebuilt
+
+            st.success("Instalaciones eliminadas.")
+            st.rerun()
+
+    st.divider()
+
+    # Reset defaults
+    st.markdown("### 🔁 Restaurar instalaciones por defecto")
+    if st.button("Restaurar checklist por defecto (precargado)"):
+        st.session_state["checklist_items"] = build_checklist_items_from_master(DEFAULT_INSTALLATIONS)
+        st.success("Restaurado.")
+        st.rerun()
+
 
 st.markdown(
     "<div style='opacity:0.6; font-size:12px; margin-top:18px;'>Plataforma de Control Interno v1.0 (demo) • Streamlit</div>",
